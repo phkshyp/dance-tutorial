@@ -1,0 +1,365 @@
+<!--skeleton_viewer.html website, renaming it to index.html for github website purposes-->
+
+<!--second step in this project, to visualise "skeleton.json"-->
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skeleton Viewer</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: rgba(24, 28, 35, 0.88); --line: #2c3340;
+    --text: #e6e9ef; --muted: #9aa4b5; --accent: #4da3ff; --warn: #ffb454;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #view { position: fixed; inset: 0 0 64px 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+
+  #info { position: fixed; top: 12px; left: 12px; max-width: 300px; padding: 10px 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
+  #info h1 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+  #info div { color: var(--muted); }
+  #info b { color: var(--text); font-weight: 600; }
+  #info .warn { color: var(--warn); margin-top: 4px; }
+  .legend { margin-top: 6px; display: flex; gap: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+
+  #empty { position: fixed; inset: 0 0 64px 0; display: flex; align-items: center; justify-content: center;
+    pointer-events: none; }
+  #empty .card { pointer-events: auto; text-align: center; padding: 28px 32px; max-width: 360px;
+    background: var(--panel); border: 1px dashed #3a4354; border-radius: 14px; }
+  #empty h2 { margin: 0 0 6px; font-size: 16px; }
+  #empty p { margin: 0 0 16px; color: var(--muted); }
+  body.dragging #empty .card { border-color: var(--accent); }
+  #err { color: var(--warn); margin-top: 12px; }
+
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; display: flex; align-items: center;
+    gap: 10px; padding: 0 12px; background: var(--panel); border-top: 1px solid var(--line); flex-wrap: nowrap;
+    overflow-x: auto; }
+  #bar > * { flex: 0 0 auto; }
+  button, select, label.btn { background: #232936; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  button:hover, label.btn:hover, select:hover { border-color: #46506a; }
+  button.primary, label.primary { background: var(--accent); border-color: var(--accent); color: #07121f; font-weight: 600; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  input[type=range] { width: 260px; flex: 1 1 200px; accent-color: var(--accent); }
+  #time { min-width: 150px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chk { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+  .sep { width: 1px; height: 28px; background: var(--line); }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+
+<div id="empty">
+  <div class="card">
+    <h2>Skeleton viewer</h2>
+    <p>Choose the <b>skeleton.json</b> produced by extract_skeleton.py, or drop it anywhere on this page.</p>
+    <label class="btn primary">Choose skeleton.json<input id="file2" type="file" accept=".json,application/json"></label>
+    <div id="err"></div>
+  </div>
+</div>
+
+<div id="info" hidden>
+  <h1 id="fname"></h1>
+  <div id="stats"></div>
+  <div class="warn" id="warn"></div>
+  <div class="legend">
+    <span><span class="dot" style="background:#4da3ff"></span>dancer's left</span>
+    <span><span class="dot" style="background:#ff9f43"></span>dancer's right</span>
+    <span><span class="dot" style="background:#4ade80"></span>foot planted</span>
+  </div>
+</div>
+
+<div id="bar">
+  <label class="btn">Open file<input id="file" type="file" accept=".json,application/json"></label>
+  <button id="play" class="primary" disabled>Play</button>
+  <input id="scrub" type="range" min="0" max="0" value="0" step="1" disabled>
+  <span id="time">–</span>
+  <select id="speed" title="Playback speed">
+    <option value="0.1">0.1×</option><option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+  </select>
+  <label class="chk"><input type="checkbox" id="loop" checked>Loop</label>
+  <label class="chk"><input type="checkbox" id="follow" checked>Follow</label>
+  <label class="chk"><input type="checkbox" id="trail" checked>Floor path</label>
+  <span class="sep"></span>
+  <button data-cam="front">Front</button>
+  <button data-cam="back">Back</button>
+  <button data-cam="left">Left side</button>
+  <button data-cam="right">Right side</button>
+  <button data-cam="top">Top</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  if (typeof THREE === "undefined" || !THREE.OrbitControls) {
+    $("err").textContent = "Could not load three.js. This viewer needs an internet connection.";
+    return;
+  }
+
+  // ------------------------------------------------------------------ scene
+  const view = $("view");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  view.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14171c);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 300);
+  camera.position.set(0, 1.4, 4.2);
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 1, 0);
+  controls.enableDamping = true;
+  controls.update();
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+  sun.position.set(2, 5, 3);
+  scene.add(sun);
+
+  let grid = null, trail = null;
+  function buildGrid(size) {
+    if (grid) scene.remove(grid);
+    grid = new THREE.GridHelper(size, size, 0x3a4252, 0x252b36);  // 1 square = 1 metre
+    scene.add(grid);
+  }
+  buildGrid(8);
+
+  function resize() {
+    const w = view.clientWidth, h = view.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / Math.max(h, 1);
+    camera.updateProjectionMatrix();
+  }
+  new ResizeObserver(resize).observe(view);
+  resize();
+
+  // --------------------------------------------------------------- skeleton
+  // BlazePose indices. Odd = dancer's left, even = dancer's right. 33/34 are virtual
+  // mid-shoulder and mid-hip points.
+  const COL = { L: 0x4da3ff, R: 0xff9f43, C: 0xcfd6df };
+  const sideOf = (i) => (i >= 33 || i === 0) ? "C" : (i % 2 === 1 ? "L" : "R");
+  const boneSide = (a, b) => {
+    const sa = sideOf(a), sb = sideOf(b);
+    if (sa === sb) return sa;
+    return sa === "C" ? sb : sb === "C" ? sa : "C";
+  };
+  const BONES = [
+    [11, 12], [23, 24], [11, 23], [12, 24], [33, 34], [33, 0],
+    [11, 13], [13, 15], [12, 14], [14, 16],
+    [15, 19], [16, 20], [15, 17], [16, 18],
+    [23, 25], [25, 27], [24, 26], [26, 28],
+    [27, 29], [29, 31], [27, 31], [28, 30], [30, 32], [28, 32],
+    [0, 7], [0, 8],
+  ];
+  const JOINTS = [0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
+  const FOOT_L = [27, 29, 31], FOOT_R = [28, 30, 32];
+  const GREEN = 0x4ade80;
+
+  const skel = new THREE.Group();
+  scene.add(skel);
+  const cyl = new THREE.CylinderGeometry(1, 1, 1, 10);
+  const sph = new THREE.SphereGeometry(1, 16, 12);
+  const mat = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55, transparent: true });
+
+  const boneMeshes = BONES.map(([a, b]) => {
+    const m = new THREE.Mesh(cyl, mat(COL[boneSide(a, b)]));
+    skel.add(m);
+    return { m, a, b };
+  });
+  const jointMeshes = JOINTS.map((i) => {
+    const m = new THREE.Mesh(sph, mat(COL[sideOf(i)]));
+    m.scale.setScalar(i === 0 ? 0.02 : i >= 15 ? 0.02 : 0.03);
+    skel.add(m);
+    return { m, i, base: COL[sideOf(i)] };
+  });
+  const head = new THREE.Mesh(sph, new THREE.MeshStandardMaterial({
+    color: 0xe5e7eb, roughness: 0.8, transparent: true, opacity: 0.3 }));
+  head.scale.setScalar(0.1);
+  skel.add(head);
+  skel.visible = false;
+
+  const pts = Array.from({ length: 35 }, () => new THREE.Vector3());
+  const UP = new THREE.Vector3(0, 1, 0), dir = new THREE.Vector3(), delta = new THREE.Vector3();
+
+  // ------------------------------------------------------------------- data
+  let data = null, pos = 0, frame = 0, playing = false, speed = 1;
+
+  function setFrame(f) {
+    if (!data) return;
+    f = Math.max(0, Math.min(data.n - 1, Math.floor(f)));
+    frame = f;
+    const lm = data.landmarks_world[f], r = data.root_position[f];
+    const vis = data.visibility ? data.visibility[f] : null;
+    const contact = data.foot_contact ? data.foot_contact[f] : null;
+
+    for (let i = 0; i < 33; i++) pts[i].set(r[0] + lm[i][0], r[1] + lm[i][1], r[2] + lm[i][2]);
+    pts[33].addVectors(pts[11], pts[12]).multiplyScalar(0.5);
+    pts[34].addVectors(pts[23], pts[24]).multiplyScalar(0.5);
+
+    const faint = (i) => vis && i < 33 && vis[i] < 0.5;
+    for (const { m, a, b } of boneMeshes) {
+      dir.subVectors(pts[b], pts[a]);
+      const len = Math.max(dir.length(), 1e-6);
+      m.position.addVectors(pts[a], pts[b]).multiplyScalar(0.5);
+      m.quaternion.setFromUnitVectors(UP, dir.normalize());
+      m.scale.set(0.014, len, 0.014);
+      m.material.opacity = (faint(a) || faint(b)) ? 0.3 : 1;
+    }
+    for (const j of jointMeshes) {
+      j.m.position.copy(pts[j.i]);
+      const planted = contact && ((contact[0] && FOOT_L.includes(j.i)) || (contact[1] && FOOT_R.includes(j.i)));
+      j.m.material.color.setHex(planted ? GREEN : j.base);
+      j.m.material.opacity = faint(j.i) ? 0.3 : 1;
+    }
+    head.position.addVectors(pts[7], pts[8]).multiplyScalar(0.5);
+
+    if ($("follow").checked) {
+      delta.set((pts[23].x + pts[24].x) / 2, 1.0, (pts[23].z + pts[24].z) / 2).sub(controls.target);
+      camera.position.add(delta);
+      controls.target.add(delta);
+    }
+    $("scrub").value = f;
+    $("time").textContent = `frame ${f + 1}/${data.n} · ${(f / data.fps).toFixed(2)}s`;
+  }
+
+  function setPlaying(p) {
+    playing = p;
+    $("play").textContent = p ? "Pause" : "Play";
+  }
+
+  function load(obj, name) {
+    const err = $("err");
+    err.textContent = "";
+    if (!obj || !Array.isArray(obj.landmarks_world) || !Array.isArray(obj.root_position)) {
+      err.textContent = "That doesn't look like a skeleton.json from extract_skeleton.py.";
+      return;
+    }
+    const n = obj.landmarks_world.length;
+    if (!n || obj.root_position.length !== n || obj.landmarks_world[0].length !== 33) {
+      err.textContent = "The file has unexpected dimensions (expected frames × 33 × 3).";
+      return;
+    }
+    data = obj;
+    data.n = n;
+    data.fps = obj.fps || 30;
+
+    // trail + grid sized to the path
+    let maxAbs = 0;
+    for (const r of data.root_position) maxAbs = Math.max(maxAbs, Math.abs(r[0]), Math.abs(r[2]));
+    buildGrid(Math.max(8, 2 * Math.ceil(maxAbs + 2)));
+    if (trail) scene.remove(trail);
+    trail = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(data.root_position.map((r) => new THREE.Vector3(r[0], 0.006, r[2]))),
+      new THREE.LineBasicMaterial({ color: 0x7c8aa5 }));
+    trail.visible = $("trail").checked;
+    scene.add(trail);
+
+    // quick data summary
+    let facing = 0, visSum = 0, visCnt = 0;
+    for (let f = 0; f < n; f++) {
+      const lm = data.landmarks_world[f];
+      if (lm[11][0] > lm[12][0]) facing++;  // dancer's left shoulder on screen-right => facing camera
+      if (data.visibility) for (const v of data.visibility[f]) { visSum += v; visCnt++; }
+    }
+    const jumps = data.suspect_frames || [];
+    $("fname").textContent = name;
+    $("stats").innerHTML =
+      `<b>${n}</b> frames · <b>${data.fps.toFixed(1)}</b> fps · <b>${(n / data.fps).toFixed(1)}</b> s<br>` +
+      `Facing camera: <b>${Math.round(100 * facing / n)}%</b> of frames` +
+      (visCnt ? `<br>Mean landmark confidence: <b>${(visSum / visCnt).toFixed(2)}</b>` : "");
+    $("warn").textContent = jumps.length
+      ? `Tracking jumps at frames ${jumps.slice(0, 6).join(", ")}${jumps.length > 6 ? "…" : ""} (possibly another person).`
+      : "";
+    $("info").hidden = false;
+    $("empty").style.display = "none";
+    skel.visible = true;
+
+    const scrub = $("scrub");
+    scrub.max = n - 1; scrub.disabled = false; $("play").disabled = false;
+    pos = 0;
+    setFrame(0);
+    controls.target.set(data.root_position[0][0], 1, data.root_position[0][2]);
+    preset(0, 0.4, 4.2);
+    setPlaying(true);
+  }
+
+  function readFile(file) {
+    if (!file) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try { load(JSON.parse(fr.result), file.name); }
+      catch (e) { $("err").textContent = "Could not read that file as JSON."; }
+    };
+    fr.readAsText(file);
+  }
+
+  // --------------------------------------------------------------- controls
+  function preset(dx, dy, dz) {
+    const t = controls.target;
+    camera.position.set(t.x + dx, t.y + dy, t.z + dz);
+    camera.lookAt(t);
+    controls.update();
+  }
+  const PRESETS = {  // the dancer starts out facing +z (toward the default camera); dancer's left is +x
+    front: [0, 0.4, 4.2], back: [0, 0.4, -4.2], left: [4.2, 0.4, 0], right: [-4.2, 0.4, 0], top: [0, 6.5, 0.01],
+  };
+  document.querySelectorAll("[data-cam]").forEach((b) =>
+    b.addEventListener("click", () => preset(...PRESETS[b.dataset.cam])));
+
+  $("play").addEventListener("click", () => {
+    if (!data) return;
+    if (!playing && pos >= data.n - 1) pos = 0;
+    setPlaying(!playing);
+  });
+  $("scrub").addEventListener("input", (e) => { pos = +e.target.value; setPlaying(false); setFrame(pos); });
+  $("speed").addEventListener("change", (e) => { speed = +e.target.value; });
+  $("trail").addEventListener("change", (e) => { if (trail) trail.visible = e.target.checked; });
+  $("file").addEventListener("change", (e) => readFile(e.target.files[0]));
+  $("file2").addEventListener("change", (e) => readFile(e.target.files[0]));
+
+  window.addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("dragging"); });
+  window.addEventListener("dragleave", () => document.body.classList.remove("dragging"));
+  window.addEventListener("drop", (e) => {
+    e.preventDefault(); document.body.classList.remove("dragging");
+    readFile(e.dataTransfer.files[0]);
+  });
+  window.addEventListener("keydown", (e) => {
+    if (!data || /^(INPUT|SELECT|BUTTON)$/.test(e.target.tagName)) return;
+    if (e.code === "Space") { e.preventDefault(); $("play").click(); }
+    if (e.code === "ArrowRight") { setPlaying(false); pos = Math.min(pos + 1, data.n - 1); setFrame(pos); }
+    if (e.code === "ArrowLeft") { setPlaying(false); pos = Math.max(pos - 1, 0); setFrame(pos); }
+  });
+
+  // ------------------------------------------------------------------- loop
+  let last = performance.now();
+  function tick(now) {
+    requestAnimationFrame(tick);
+    const dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (data && playing) {
+      pos += dt * data.fps * speed;
+      if (pos >= data.n) {
+        if ($("loop").checked) pos %= data.n;
+        else { pos = data.n - 1; setPlaying(false); }
+      }
+      if (Math.floor(pos) !== frame) setFrame(pos);
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
